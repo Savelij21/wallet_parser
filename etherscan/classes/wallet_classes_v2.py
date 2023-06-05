@@ -3,7 +3,8 @@ import json
 
 import aiohttp as aiohttp
 import requests
-from datetime import datetime
+import datetime
+import time
 from typing import List
 from etherscan.classes import mixins
 
@@ -16,15 +17,19 @@ class Wallet(mixins.APIKeys):
         self.start_date = start_date
         self.end_date = end_date
         self.show_details = show_details
-        self.transactions: List['Transaction'] = self.__get_wallet_transactions()[0:10]
+        self.transactions: List['Transaction'] = self.__get_wallet_transactions()#[0:30]
         self.tickers: List['Ticker'] = self.__get_tickers()
-
+        # calculating sum params for tickers after getting scam statuses
+        self.__checking_scam_tickers_by_volume_and_liquid_data_from_dexguru()
+        for ticker in self.tickers:
+            ticker.calc_sum_params_and_usd_delta()
+        # sorting
         self.__sorting_tickers_by_sum_delta()
-        self.__checking_scam_by_volume_and_liquid_by_data_from_dexguru_for_tickers()
 
     # get wallet transactions from Etherscan API
     def __get_wallet_transactions(self) -> List['Transaction']:
-        def etherscan_get_transactions() -> list:
+        # getting all ERC20 transactions of wallet and removing splits
+        def etherscan_get_erc20_transactions() -> list:
             api_url = 'https://api.etherscan.io/api'
 
             params = {
@@ -35,62 +40,87 @@ class Wallet(mixins.APIKeys):
                 'startblock': 0,
                 'endblock': 99999999,
                 'sort': 'desc',
-                # 'page': 1,
-                # 'offset': 20
-                # tests UNI-V2
-                # 'contractaddress': '0x34b6f33a5d88fca1b8f78a510bc81673611a68f0'
+            }
+
+            response = requests.get(api_url, params=params).json()
+            raw_transactions: list = response['result']
+            return raw_transactions
+
+        # getting all Normal transactions of wallet to filter transactions with 'execute' method
+        def etherscan_get_normal_transactions_methods() -> dict:
+            api_url = 'https://api.etherscan.io/api'
+
+            params = {
+                'module': 'account',
+                'action': 'txlist',
+                'address': self.wallet_address,
+                'apikey': self.etherscan_api_key,
+                'startblock': 0,
+                'endblock': 99999999,
+                'sort': 'desc',
             }
 
             response = requests.get(api_url, params=params).json()
             raw_transactions: list = response['result']
 
-            transactions = []
-            for raw_transaction in raw_transactions:
+            normal_hashes = {}
+            for transaction in raw_transactions:
+                normal_hashes[transaction['hash']] = transaction['functionName']
 
-                transaction = Transaction(raw_transaction, self.wallet_address)
+            return normal_hashes  # {hash: function name, hash: function name, ...}
 
-                # filtering by date
-                if self.start_date <= transaction.date_time <= self.end_date:
-                    transactions.append(transaction)
+        # removing splits
+        def remove_splits(splited_transactions: List['Transaction']):
+            non_split_transactions = []
+            # orig_hashes = []
+            orig_hashes = {}
+            for transaction in splited_transactions:
 
-            def remove_splits(splited_transactions: List['Transaction']):
-                non_split_transactions = []
-                # orig_hashes = []
-                orig_hashes = {}
-                for transaction in splited_transactions:
+                if (transaction.token_address, transaction.transaction_hash) not in orig_hashes.items():
+                    non_split_transactions.append(transaction)
+                    orig_hashes[transaction.token_address] = transaction.transaction_hash
+                else:
+                    for non_split_transaction in non_split_transactions:
+                        if (non_split_transaction.transaction_hash, non_split_transaction.token_address) == (transaction.transaction_hash, transaction.token_address):
+                            non_split_transaction.value += transaction.value
 
-                    if (transaction.token_address, transaction.transaction_hash) not in orig_hashes.items():
-                        non_split_transactions.append(transaction)
-                        orig_hashes[transaction.token_address] = transaction.transaction_hash
-                    else:
-                        for non_split_transaction in non_split_transactions:
-                            if (non_split_transaction.transaction_hash, non_split_transaction.token_address) == (transaction.transaction_hash, transaction.token_address):
-                                non_split_transaction.value += transaction.value
+            return non_split_transactions
 
+        # converting user's date to timestamp for filtering
+        def convert_to_timestamp(user_date):  # template of input: d/m/Y (25/05/2023)
+            timestamp = int(time.mktime(datetime.datetime.strptime(user_date, '%d/%m/%Y').timetuple()))
+            return timestamp
 
-                    # if transaction._raw_transaction['hash'] not in orig_hashes:
-                    #     non_split_transactions.append(transaction)
-                    #     orig_hashes.append(transaction._raw_transaction['hash'])
-                    # else:
-                    #     for i in non_split_transactions:
-                    #         if i._raw_transaction['hash'] == transaction._raw_transaction['hash'] and i._raw_transaction['contractAddress'] == transaction._raw_transaction['contractAddress']:
-                    #             i.value += transaction.value
-                    #         else:  # if diff tokens have same hash
-                    #             # tests
-                    #             print(transaction.token_symbol)
-                    #             continue
+        # getting data from Etherscan API
+        raw_erc20_transactions = etherscan_get_erc20_transactions()
+        normal_transactions_dict = etherscan_get_normal_transactions_methods()
+        # handling transactions
+        splited_transactions = []
+        for transaction in raw_erc20_transactions:
+            # not normal, HATEv3 for example
+            if transaction['hash'] not in normal_transactions_dict.keys():
+                print(transaction['tokenName'], transaction['hash'], 'is not normal transaction')
+                continue
+            # not 'execute' method transactions
+            elif 'execute' not in normal_transactions_dict[transaction['hash']]:
+                print(transaction['tokenName'], transaction['hash'], normal_transactions_dict[transaction['hash']], 'NOT execute')
+                continue
+            # skip stablecoins
+            if transaction['tokenSymbol'] in self.stablecoins_list:
+                continue
+            # filtering by date range
+            start_range_ts = convert_to_timestamp(self.start_date)
+            end_range_ts = convert_to_timestamp(self.end_date)
+            if not (start_range_ts <= int(transaction['timeStamp']) <= end_range_ts):
+                continue
+            # append to final transactions if transaction passed all filters
+            splited_transactions.append(Transaction(transaction, self.wallet_address))
 
-                return non_split_transactions
+        # remove splits
+        non_splited_transactions = remove_splits(splited_transactions)
 
-            transactions = remove_splits(transactions)
-
-            print(f'Found {len(transactions)} transactions in range {self.start_date} and {self.end_date}\n')
-            return transactions
-
-        # def filter_transactions_by_date_range(transactions: List['Transaction']):
-        #     for transaction in transactions
-
-        return etherscan_get_transactions()
+        print(f'Found {len(non_splited_transactions)} transactions in range {self.start_date} and {self.end_date}\n')
+        return non_splited_transactions
 
     # get wallet tickers (grouped transactions by token symbol)
     def __get_tickers(self) -> List['Ticker']:
@@ -102,14 +132,6 @@ class Wallet(mixins.APIKeys):
                 grouped_transactions[transaction.token_address].append(transaction)
             else:
                 grouped_transactions[transaction.token_address] = [transaction]
-
-        # # prepare dict
-        # grouped_transactions = {}
-        # for transaction in self.transactions:
-        #     if transaction.token_symbol in grouped_transactions.keys():
-        #         grouped_transactions[transaction.token_symbol].append(transaction)
-        #     else:
-        #         grouped_transactions[transaction.token_symbol] = [transaction]
 
         # collecting Ticker objects
         tickers = []
@@ -142,7 +164,7 @@ class Wallet(mixins.APIKeys):
                 ticker.sum_delta_usd = stables[ticker.ticker_symbol]
 
     # getting 24h volume in usd (to check scam)
-    def __checking_scam_by_volume_and_liquid_by_data_from_dexguru_for_tickers(self):
+    def __checking_scam_tickers_by_volume_and_liquid_data_from_dexguru(self):
         async def get_volume_from_dexguru(tickers: List['Ticker']):
             async def assign_price_for_transaction(async_session, token_address):
 
@@ -204,8 +226,6 @@ class Wallet(mixins.APIKeys):
     def __calc_pnl_metrics(self):
         pass
 
-    # calculating Winrate R and Winrate UR
-
 
 class Transaction:
 
@@ -230,8 +250,7 @@ class Transaction:
         return self.token_symbol
 
     def __get_transaction_date_time(self):
-        date_time = datetime.utcfromtimestamp(int(self._raw_transaction['timeStamp']))
-        # transaction['time_since'] = str(datetime.utcnow() - date_time)
+        date_time = datetime.datetime.utcfromtimestamp(int(self._raw_transaction['timeStamp']))
         return str(date_time)
 
     def __get_value(self):
@@ -285,7 +304,7 @@ class Ticker(mixins.APIKeys):
         self.__get_missing_actual_price_from_dexguru()
         # CALCULATING TOKEN PARAMS
         self.__calc_total_and_tr_amount_params()
-        self.__calc_sum_params_and_usd_delta()
+        # self.__calc_sum_params_and_usd_delta()
 
     # 1. GETTING TOKEN PRICES #########################################################################################
     #     1.1 getting historical prices from Moralis API
@@ -463,14 +482,15 @@ class Ticker(mixins.APIKeys):
 
         self.total_delta = self.total_bought - self.total_sold
 
-    #     2.2 calculating total_delta_usd, sum_bought_usd, sum_sold_usd, sum_delta_usd
-    def __calc_sum_params_and_usd_delta(self):
         # total_delta_usd
         self.total_delta_usd = self.total_delta * self.current_price_usd
         #       if delta is too small -> down to zero
         if self.total_delta_usd < 1:
             self.total_delta = 0
             self.total_delta_usd = 0
+
+    #     2.2 calculating total_delta_usd, sum_bought_usd, sum_sold_usd, sum_delta_usd (! will run after getting scam statuses in Wallet class Init def!)
+    def calc_sum_params_and_usd_delta(self):
         # sums for every transaction and collecting sum_bought and sum_sold
         for transaction in self.transactions:
             # 2.2.1 calculating sums for every transaction of ticker
@@ -491,8 +511,12 @@ class Ticker(mixins.APIKeys):
                 self.sum_sold_usd = 'N/A'
 
         # sum_delta calc
-        if self.is_valid:
+        if self.is_valid and not self.is_scam:
+            # for usual normal token
             self.sum_delta_usd = self.sum_sold_usd - self.sum_bought_usd + self.total_delta_usd
+            # if token is scammed and it was bought by user, we do not sum delta to profit
+        elif self.is_valid and self.is_scam:
+            self.sum_delta_usd = self.sum_sold_usd - self.sum_bought_usd
         else:
             self.sum_delta_usd = 'N/A'
             # tests

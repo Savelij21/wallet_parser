@@ -44,7 +44,7 @@ class ExcelWallet:
             'Дельта, $',
             'Сумма покупок, $',
             'Сумма продаж, $',
-            'Дельта (выручка с продаж + нереализ. дельта)',
+            'Дельта (профит), $',
             'Цена покупки, $',
             'Цена продажи, $',
             'Текущая цена, $',
@@ -124,11 +124,14 @@ class ExcelWallet:
             string = str(string_num)
 
             # token symbol column
-            self.sheet[f'A{string}'] = f'{ticker_obj.ticker_symbol}                {ticker_obj.token_address}'
+            self.sheet[f'A{string}'] = f'{ticker_obj.ticker_symbol}                      {ticker_obj.token_address}'
             if not ticker.is_valid or round(ticker.total_delta_usd, 1) < 0:
                 self.sheet[f'A{string}'].fill = red_fill
             elif ticker.is_stablecoin:
                 self.sheet[f'A{string}'].fill = blue_fill
+
+            # datetime field skip
+            self.sheet[f'B{string}'] = '---'
 
             # tools
             def validated(param, round_num=2):
