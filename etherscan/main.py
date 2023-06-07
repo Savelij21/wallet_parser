@@ -2,13 +2,13 @@ import time
 from etherscan.classes import excel_classes_v2, wallet_classes_v2
 
 # TODO:
-#           1. решить, какие методы будем допускать для добавления транзакции в таблицу
+#           1. решить, какие методы будем допускать для добавления транзакции в таблицу - решено swap, execute, maybe будут и другие
 #           2. посчитать метрики кошелька - !!!!!
 
 
 # INPUT data:
 network = 'eth'  # network for scanning
-eth_wallet_address = '0x42b27c044a22acaff04146aa243753ee617a59b5' # '0x5c33fafCF6317C71B2BE4291506EA5c3aC099aAD'  wallet for parsing
+eth_wallet_address = '0x5c33fafCF6317C71B2BE4291506EA5c3aC099aAD' # '0x42b27c044a22acaff04146aa243753ee617a59b5' #   wallet for parsing
 start_date = '01/01/2003'  # dd/mm/yyyy: start point for diapason
 end_date = '01/10/2033'  # dd/mm/yyyy: end point for diapason
 show_details_ticker = 'No'  # show all transactions of ticker in Excel (Да/Нет)

@@ -15,6 +15,7 @@ class ExcelWallet:
             self.__preparing_template_no_details()
             self.__filling_tickers_to_excel_no_details()
 
+    # 1. Show details view
     def __preparing_template_show_details(self):
         self.sheet['A1'] = 'Кошелек'
         self.sheet['B1'] = self.wallet.wallet_address
@@ -197,6 +198,7 @@ class ExcelWallet:
             # adding string for the next ticker
             current_string += 1
 
+    # 2. No details view
     def __preparing_template_no_details(self):
         self.sheet['A1'] = 'Кошелек'
         self.sheet['A2'] = self.wallet.wallet_address
@@ -207,6 +209,7 @@ class ExcelWallet:
             end_row=2
         )
 
+        # Header of table
         self.sheet['D1'] = 'WinRate R'
         self.sheet['D2'] = 'WinRate UR'
 
@@ -219,7 +222,7 @@ class ExcelWallet:
         self.sheet['J1'] = 'Total R'
         self.sheet['J2'] = 'Total UR'
 
-        # ticker params and metrics
+        # Ticker params and metrics headers
         table_headers = [
             ' Тикеры',
             ' Всего купили',
@@ -249,8 +252,6 @@ class ExcelWallet:
         self.sheet['L4'] = table_headers[11]
         self.sheet['M4'] = table_headers[12]
 
-
-        # edit columns width
         self.sheet.column_dimensions['A'].width = 10
         self.sheet.column_dimensions['B'].width = 18
         self.sheet.column_dimensions['C'].width = 18
@@ -265,7 +266,7 @@ class ExcelWallet:
         self.sheet.column_dimensions['L'].width = 10
         self.sheet.column_dimensions['M'].width = 40
 
-        # italic style for header row
+        # italic style for headers row
         for row in self.sheet.iter_rows(min_row=4, max_row=4,
                                         min_col=1, max_col=14):
             for cell in row:
@@ -298,6 +299,15 @@ class ExcelWallet:
                 else:
                     return round(float(param), round_num)
 
+            def get_sum_delta_usd(sum_delta_usd):
+                if sum_delta_usd == 'N/A':
+                    return 'N/A'
+                else:
+                    if sum_delta_usd < 0:
+                        return f'-${abs(validated(sum_delta_usd, 2))}'
+                    else:
+                        return f'${validated(ticker_obj.sum_delta_usd, 2)}'
+
             # total params
             self.sheet[f'B{string}'] = ticker_obj.total_bought if ticker_obj.total_bought < 100 else validated(ticker_obj.total_bought, 2)
             self.sheet[f'C{string}'] = ticker_obj.total_sold if ticker_obj.total_sold < 100 else validated(ticker_obj.total_sold, 2)
@@ -309,19 +319,10 @@ class ExcelWallet:
             elif ticker_obj.total_delta_usd == 0:
                 self.sheet[f'D{string}'].fill = green_fill
                 self.sheet[f'E{string}'].fill = green_fill
+
             # sum metrics
             self.sheet[f'F{string}'] = f'${validated(ticker_obj.sum_bought_usd, 2)}'
             self.sheet[f'G{string}'] = f'${validated(ticker_obj.sum_sold_usd, 2)}'
-
-            def get_sum_delta_usd(sum_delta_usd):
-                if sum_delta_usd == 'N/A':
-                    return 'N/A'
-                else:
-                    if sum_delta_usd < 0:
-                        return f'-${abs(validated(sum_delta_usd, 2))}'
-                    else:
-                        return f'${validated(ticker_obj.sum_delta_usd, 2)}'
-
             self.sheet[f'H{string}'] = get_sum_delta_usd(ticker_obj.sum_delta_usd)
             if ticker_obj.sum_delta_usd == 'N/A':
                 self.sheet[f'H{string}'].fill = yellow_fill
@@ -354,7 +355,6 @@ class ExcelWallet:
             # TOTAL DATA FOR TICKER
             # coloring string if token is SCAMMED (before data filling because usual data not need in styles)
             if ticker.is_scam:
-                self.sheet.cell(row=current_string, column=1).font = Font(color='FFFFFF')
                 self.sheet.cell(row=current_string, column=1).fill = black_fill
             # filling data
             fill_total_string_for_ticker(ticker_obj=ticker, string_num=current_string)
@@ -374,7 +374,7 @@ class ExcelWallet:
             for cell in row:
                 cell.alignment = Alignment(horizontal='right', vertical='center')
 
-        # template data
+
         for row in self.sheet.iter_rows(min_row=1, max_row=2,
                                         min_col=1, max_col=14):
             for cell in row:
