@@ -17,7 +17,7 @@ class Wallet(mixins.APIKeys):
         self.start_date = start_date
         self.end_date = end_date
         self.show_details = show_details
-        self.transactions: List['Transaction'] = self.__get_wallet_transactions()#[0:30]
+        self.transactions: List['Transaction'] = self.__get_wallet_transactions()#[30:60]
         self.tickers: List['Ticker'] = self.__get_tickers()
         # calculating sum params for tickers after getting scam statuses
         self.__checking_scam_tickers_by_volume_and_liquid_data_from_dexguru()
@@ -25,8 +25,13 @@ class Wallet(mixins.APIKeys):
             ticker.calc_sum_params_and_usd_delta()
         # sorting
         self.__sorting_tickers_by_sum_delta()
+        # metrics
+        self.pnl_r_metrics = 0
+        self.pnl_ur_metrics = 0
+        self.winrate_r = 0
+        self.winrate_ur = 0
 
-    # get wallet transactions from Etherscan API
+    # 1. Get wallet transactions from Etherscan API
     def __get_wallet_transactions(self) -> List['Transaction']:
         # getting all ERC20 transactions of wallet and removing splits
         def etherscan_get_erc20_transactions() -> list:
@@ -96,15 +101,18 @@ class Wallet(mixins.APIKeys):
         normal_transactions_dict = etherscan_get_normal_transactions_methods()
         # handling transactions
         splited_transactions = []
+
         for transaction in raw_erc20_transactions:
             # not normal, HATEv3 for example
             if transaction['hash'] not in normal_transactions_dict.keys():
                 print(transaction['tokenName'], transaction['hash'], 'is not normal transaction')
                 continue
-            # not 'execute' method transactions
-            elif 'execute' not in normal_transactions_dict[transaction['hash']]:
-                print(transaction['tokenName'], transaction['hash'], normal_transactions_dict[transaction['hash']], 'NOT execute')
+
+            # if transaction method contains key words 'execute' or 'swap'
+            elif not ('execute' in normal_transactions_dict[transaction['hash']].lower() or 'swap' in normal_transactions_dict[transaction['hash']].lower()):
+                print(transaction['tokenName'], transaction['hash'], normal_transactions_dict[transaction['hash']], 'NOT execute or swap')
                 continue
+
             # skip stablecoins
             if transaction['tokenSymbol'] in self.stablecoins_list:
                 continue
@@ -122,7 +130,7 @@ class Wallet(mixins.APIKeys):
         print(f'Found {len(non_splited_transactions)} transactions in range {self.start_date} and {self.end_date}\n')
         return non_splited_transactions
 
-    # get wallet tickers (grouped transactions by token symbol)
+    # 2. Get wallet tickers (grouped transactions by token symbol)
     def __get_tickers(self) -> List['Ticker']:
         # prepare dict
         grouped_transactions = {}
@@ -142,28 +150,7 @@ class Wallet(mixins.APIKeys):
 
         return tickers
 
-    # sorting tickers list by sum_delta_usd param
-    def __sorting_tickers_by_sum_delta(self):
-        # handling tickers with invalid data and stablecoins
-        stables = {}
-        for ticker in self.tickers:
-            if ticker.sum_delta_usd == 'N/A':
-                ticker.sum_delta_usd = -999999999999999.9
-            if ticker.is_stablecoin:
-                stables[ticker.ticker_symbol] = ticker.sum_delta_usd
-                ticker.sum_delta_usd = 999999999999999.9
-
-        # sorting
-        self.tickers.sort(key=lambda x: x.sum_delta_usd, reverse=True)
-
-        # reversing invalid data for tickers
-        for ticker in self.tickers:
-            if ticker.sum_delta_usd == -999999999999999.9:
-                ticker.sum_delta_usd = 'N/A'
-            if ticker.is_stablecoin:
-                ticker.sum_delta_usd = stables[ticker.ticker_symbol]
-
-    # getting 24h volume in usd (to check scam)
+    # 3. Getting 24h volume in usd (to check scam)
     def __checking_scam_tickers_by_volume_and_liquid_data_from_dexguru(self):
         async def get_volume_from_dexguru(tickers: List['Ticker']):
             async def assign_price_for_transaction(async_session, token_address):
@@ -222,7 +209,38 @@ class Wallet(mixins.APIKeys):
         else:
             asyncio.run(get_volume_from_dexguru(self.tickers))
 
-    # calculating PNL R and PNL UR
+    # 4. Sorting tickers list by sum_delta_usd param
+    def __sorting_tickers_by_sum_delta(self):
+        # handling tickers with invalid data
+        for ticker in self.tickers:
+            if ticker.sum_delta_usd == 'N/A':
+                ticker.sum_delta_usd = -999999999999999.9
+        # sorting
+        self.tickers.sort(key=lambda x: x.sum_delta_usd, reverse=True)
+        # reversing invalid data for tickers
+        for ticker in self.tickers:
+            if ticker.sum_delta_usd == -999999999999999.9:
+                ticker.sum_delta_usd = 'N/A'
+        # sorting by total delta value
+        zero_delta = []
+        delta_exists = []
+        negative_delta_error = []
+        n_a = []
+        for ticker in self.tickers:
+            if not ticker.is_valid:
+                n_a.append(ticker)
+            elif ticker.total_delta_usd < 0:
+                negative_delta_error.append(ticker)
+            elif ticker.total_delta_usd == 0:
+                zero_delta.append(ticker)
+            elif ticker.total_delta_usd > 0:
+                delta_exists.append(ticker)
+            else:
+                n_a.append(ticker)
+
+        self.tickers = zero_delta + delta_exists + negative_delta_error + n_a
+
+    # 5. Calculating PNL R and PNL UR
     def __calc_pnl_metrics(self):
         pass
 
@@ -280,20 +298,17 @@ class Ticker(mixins.APIKeys):
         self.sum_bought_usd = 0  # bought tokens in USD
         self.sum_sold_usd = 0  # sold tokens in USD
         self.sum_delta_usd = 0  # sums delta in USD (earning)
+        self.profit = 0  # profit in %
         self.current_price_usd = 0  # current token price in USD
         self.buy_tr_amount = 0  # a lot of 'buy' transactions
         self.sell_tr_amount = 0  # a lot of 'sell' transactions
+        self.is_parted = False  # if part of tokens were got from nowhere, but part was sold
+        self.fair_part = 0  # part of sell transactions that are equal to amount of buy transactions
         self.is_valid = True  # if ticker have at least one N/A data - give False valid
 
         self.volume_24h_usd = 0  # volume for checking scam tokens
         self.liquidity_usd = 0  # liquidity in usd
         self.is_scam = False  # if volume 24 < 300 or liquidity < 1000
-
-        # stablecoin status check
-        if self.ticker_symbol in self.stablecoins_list:
-            self.is_stablecoin = True
-        else:
-            self.is_stablecoin = False  # is this token a stablecoin
 
         # GETTING TOKEN PRICES
 
@@ -304,7 +319,6 @@ class Ticker(mixins.APIKeys):
         self.__get_missing_actual_price_from_dexguru()
         # CALCULATING TOKEN PARAMS
         self.__calc_total_and_tr_amount_params()
-        # self.__calc_sum_params_and_usd_delta()
 
     # 1. GETTING TOKEN PRICES #########################################################################################
     #     1.1 getting historical prices from Moralis API
@@ -363,8 +377,6 @@ class Ticker(mixins.APIKeys):
             # assigning prices
             for i in range(len(responses)):
                 response_25 = responses[i]
-                # tests
-                # print(json.dumps(response_25, indent=2))
                 for j in range(len(response_25)):
                     if not response_25[j] or 'usdPrice' not in response_25[j].keys() or response_25[j]['usdPrice'] == 'N/A':
                         six_requests[i][j].token_price_usd = 'Moralis can\'t find price'
@@ -414,8 +426,7 @@ class Ticker(mixins.APIKeys):
                         begin_ts -= 5000
                         end_ts += 5000
                         # test
-                        print(
-                            transaction.token_symbol, ': no price data in timestamp range', begin_ts, '-', end_ts)
+                        print(transaction.token_symbol, ': no price data in timestamp range', begin_ts, '-', end_ts)
                         continue
 
                     transaction.token_price_usd = float(response_json['data'][0]['price_usd'])
@@ -485,9 +496,18 @@ class Ticker(mixins.APIKeys):
         # total_delta_usd
         self.total_delta_usd = self.total_delta * self.current_price_usd
         #       if delta is too small -> down to zero
-        if self.total_delta_usd < 1:
+        if 0 <= abs(self.total_delta_usd) <= 1:
             self.total_delta = 0
             self.total_delta_usd = 0
+
+        #  accurate deal with partly bought tokens
+        if self.total_delta < 0:
+            self.is_parted = True
+            if self.total_bought == 0:
+                self.fair_part = 0
+            else:
+                self.fair_part = self.total_bought/self.total_sold
+
 
     #     2.2 calculating total_delta_usd, sum_bought_usd, sum_sold_usd, sum_delta_usd (! will run after getting scam statuses in Wallet class Init def!)
     def calc_sum_params_and_usd_delta(self):
@@ -511,13 +531,24 @@ class Ticker(mixins.APIKeys):
                 self.sum_sold_usd = 'N/A'
 
         # sum_delta calc
-        if self.is_valid and not self.is_scam:
+        if self.is_valid and not self.is_scam and not self.is_parted:
             # for usual normal token
             self.sum_delta_usd = self.sum_sold_usd - self.sum_bought_usd + self.total_delta_usd
             # if token is scammed and it was bought by user, we do not sum delta to profit
-        elif self.is_valid and self.is_scam:
+        elif self.is_valid and self.is_scam and not self.is_parted:
             self.sum_delta_usd = self.sum_sold_usd - self.sum_bought_usd
+            # for partly sold/bought tokens
+        elif self.is_valid and self.is_parted:
+            self.sum_delta_usd = (self.sum_sold_usd - self.sum_bought_usd)*self.fair_part
         else:
             self.sum_delta_usd = 'N/A'
             # tests
             print(f'{self.ticker_symbol} is not valid')
+
+        # profit in % calc
+        if self.is_valid and self.sum_delta_usd != 0:
+            self.profit = self.sum_delta_usd*100/self.sum_bought_usd
+        elif self.is_valid and self.sum_delta_usd == 0:
+            self.profit = 0
+        else:
+            self.profit = 'N/A'
